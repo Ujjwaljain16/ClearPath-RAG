@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+pydantic
+aiohttp
+pdfplumber
+sentence-transformers
+faiss-cpu
+groq
+tiktoken
+python-dotenv
+pypdf
+rank-bm25
+numpy
+torch
