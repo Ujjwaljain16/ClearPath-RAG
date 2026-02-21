@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node / Frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+.vite/
+
+# RAG / PDF Indexing (Reproducible from docs/)
+app/backend/*.faiss
+app/backend/*.pkl
+app/backend/chunk_metadata.json
+app/backend/security_debug.log
+query_logs.jsonl
+*.jsonl
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
