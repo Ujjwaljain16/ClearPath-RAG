@@ -221,6 +221,7 @@ async def query_stream_endpoint(request: QueryRequest):
     Note: Structured logging and evaluation metrics are captured at the end 
     of the stream to handle partial data trade-offs.
     """
+    request_start_time = time.time()
     route_decision = route_query(request.question)
     
     with ThreadPoolExecutor() as executor:
@@ -233,9 +234,7 @@ async def query_stream_endpoint(request: QueryRequest):
     retrieval_result = retrieve_context(request.question, expanded_query=expanded_query)
     
     retrieval_latency = int((time.time() - retrieval_start) * 1000)
-    
     async def stream_wrapper():
-        start_time = time.time()
         full_answer = ""
         # We use a simple token estimation for streaming usage logs
         # (~4 chars per token)
@@ -249,7 +248,7 @@ async def query_stream_endpoint(request: QueryRequest):
             yield token
         
         # Async logging and metadata payload after stream completion
-        total_latency = int((time.time() - start_time) * 1000)
+        total_latency = int((time.time() - request_start_time) * 1000)
         
         # Recalculate evaluation logic on the finalized answer
         flags = evaluate_response(
