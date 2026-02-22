@@ -41,6 +41,7 @@ flowchart TD
 ```
 
 ---
+```We didn't used any vector DB because if we would have used that this assignment would be more or less just a wrapper around that so we adhere to the guidelines as per the assignment of not using any third party libraries and all```
 
 # 🚀 Key Features & Innovations
 
