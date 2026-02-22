@@ -58,7 +58,7 @@ Instead of using an expensive LLM to route queries, we use a **heuristic scoring
 
 ---
 
-# 📚 Chunking Strategy — Tradeoffs & Rationale
+# 📚 Chunking Strategy - Tradeoffs & Rationale
 
 ### The Challenge
 The corpus consists of 30 heterogeneous PDFs with inconsistent heading formats, complex tables, and occasional malformed text. A naive section-aware chunker would likely fail on these structural inconsistencies, leading to "silent extraction loss."
@@ -77,7 +77,7 @@ We intentionally chose a fixed-length sliding window to ensure **100% coverage r
 
 ---
 
-# � Retrieval Engine — Hybrid + Reranked
+# � Retrieval Engine - Hybrid + Reranked
 
 ### Why Hybrid?
 *   **Dense (FAISS)**: Captures semantic "vibes" but often misses exact tokens like "403" or "v2.1".
@@ -96,7 +96,7 @@ Clearpath Nexus combines both using **Reciprocal Rank Fusion (RRF)**.
 
 ---
 
-# 🛡️ Security Architecture — 5-Layer Defense
+# 🛡️ Security Architecture - 5-Layer Defense
 
 Documentation is treated as untrusted data. We implement a defense-in-depth model:
 1.  **Instruction Hierarchy**: System prompts are explicitly prioritized over document strings.
@@ -139,6 +139,13 @@ GROQ_API_KEY=your_api_key_here
 2.  **Streaming Responses**: Fully asynchronous token-by-token streaming with "hidden envelope" metadata parsing for real-time observability.
 
 ---
+# Demo Images:
+<img width="1919" height="1029" alt="image" src="https://github.com/user-attachments/assets/fb58da36-afbb-45ec-98a3-c8e2de70742d" />
+<img width="1918" height="1034" alt="image" src="https://github.com/user-attachments/assets/3ff799bb-f673-4f04-a179-56dd5bb63f60" />
+<img width="1919" height="1031" alt="image" src="https://github.com/user-attachments/assets/15563f53-427d-4632-b66e-6caea63a72eb" />
+<img width="1919" height="1033" alt="image" src="https://github.com/user-attachments/assets/b78bfe83-c120-4539-8c98-5e3bd9f972f0" />
+<img width="1919" height="1032" alt="image" src="https://github.com/user-attachments/assets/104b74e5-d3e7-42a6-b89e-844f392c9014" />
+<img width="1919" height="1027" alt="image" src="https://github.com/user-attachments/assets/90b35944-7ada-4b68-80f3-83a49405eac2" />
 
 # 🛠️ Setup & Execution
 
@@ -174,4 +181,3 @@ npm run dev
 3.  **Chunk Size Staticity**: Fixed at 900 chars; very large tables might still suffer from fragmentation.
 
 ---
-*Clearpath Nexus — Developed by a lifelong student of Document Intelligence.*
