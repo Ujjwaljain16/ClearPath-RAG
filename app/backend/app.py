@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
 import re
+import json
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor
 
@@ -16,7 +17,7 @@ load_dotenv()
 from routing.model_router import route_query
 from rag.retriever import retrieve_context, load_index
 from rag.embedder import warmup as warmup_embedder
-from rag.generator import generate_answer, get_groq_client, expand_query
+from rag.generator import generate_answer, generate_answer_stream, get_groq_client, get_async_groq_client, expand_query
 from rag.cache import query_cache
 from evaluation.output_evaluator import evaluate_response
 from query_logging.query_logger import log_query_async
@@ -32,6 +33,8 @@ async def lifespan(app: FastAPI):
     await loop.run_in_executor(None, warmup_embedder)
     await loop.run_in_executor(None, load_index)
     await loop.run_in_executor(None, get_groq_client)
+    # Warm up async client (doesn't need executor as it's just initialization)
+    get_async_groq_client()
     from rag.retriever import _get_reranker
     await loop.run_in_executor(None, _get_reranker)
     print("All singletons warmed up. Ready for requests.")
@@ -224,17 +227,80 @@ async def query_stream_endpoint(request: QueryRequest):
         expansion_future = None
         if len(request.question.split()) < 8:
             expansion_future = executor.submit(expand_query, request.question)
-        
         expanded_query = expansion_future.result() if expansion_future else None
         
+    retrieval_start = time.time()
     retrieval_result = retrieve_context(request.question, expanded_query=expanded_query)
     
-    return StreamingResponse(
-        generate_answer_stream(
+    retrieval_latency = int((time.time() - retrieval_start) * 1000)
+    
+    async def stream_wrapper():
+        start_time = time.time()
+        full_answer = ""
+        # We use a simple token estimation for streaming usage logs
+        # (~4 chars per token)
+        async for token in generate_answer_stream(
             query=request.question,
             retrieved_chunks=retrieval_result.get("chunks", []),
             model_string=route_decision["model_used"],
             history=request.history
-        ),
-        media_type="text/plain"
-    )
+        ):
+            full_answer += token
+            yield token
+        
+        # Async logging and metadata payload after stream completion
+        total_latency = int((time.time() - start_time) * 1000)
+        
+        # Recalculate evaluation logic on the finalized answer
+        flags = evaluate_response(
+            query=request.question,
+            response=full_answer,
+            retrieved_chunks=retrieval_result.get("chunks", [])
+        )
+        
+        # Final sanitization for logs
+        input_tokens = len(str(request.question) + str(retrieval_result)) // 4
+        output_tokens = len(full_answer) // 4
+        
+        log_data = {
+            "query":               request.question,
+            "classification":      route_decision["classification"],
+            "model_used":          route_decision["model_used"],
+            "routing_score":       route_decision["score"],
+            "tokens_input":        input_tokens,
+            "tokens_output":       output_tokens,
+            "latency_ms":          total_latency,
+            "num_chunks_retrieved": len(retrieval_result.get("chunks", [])),
+            "streaming":           True,
+            "evaluator_flags":     flags
+        }
+        await log_query_async(log_data)
+
+        # Prepare a structured payload for the frontend to populate the DebugPanel
+        payload = {
+            "metadata": {
+                "model_used": route_decision["model_used"],
+                "classification": route_decision["classification"],
+                "tokens": {"input": input_tokens, "output": output_tokens},
+                "latency_ms": total_latency,
+                "retrieval_latency_ms": retrieval_latency,
+                "num_chunks_retrieved": len(retrieval_result.get("chunks", [])),
+                "avg_similarity_score": retrieval_result.get("avg_similarity", 0.0),
+                "routing_score": route_decision["score"],
+                "evaluator_flags": flags
+            },
+            "sources": [
+                {
+                    "document": c.get("doc_id", "unknown"),
+                    "section": c.get("section_title"),
+                    "page": c.get("page"),
+                    "relevance_score": round(c.get("similarity", 0.0), 4)
+                }
+                for c in retrieval_result.get("chunks", [])
+            ]
+        }
+        
+        # This marker and payload are ignored by the display logic but parsed by the metadata handler
+        yield f"\n\n__METADATA_JSON__\n{json.dumps(payload)}\n"
+
+    return StreamingResponse(stream_wrapper(), media_type="text/plain")

@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
-import { askApi } from '../../api/api';
+import { askApi, askStreamApi } from '../../api/api';
 import { QueryResponse, SourceResponse } from '../../api/models';
 
 interface ChatProps {
@@ -16,6 +16,7 @@ interface Message {
     role: 'user' | 'bot';
     text: string;
     sources?: SourceResponse[];
+    modelUsed?: string;
 }
 
 const Citation: React.FC<{ index: string; sources?: SourceResponse[] }> = ({ index, sources }) => {
@@ -89,32 +90,75 @@ export const Chat: React.FC<ChatProps> = ({ conversationId, onMetadataUpdate, on
         setMessages(prev => [...prev, newUserMessage]);
         setIsLoading(true);
 
-        try {
-            // Map our internal Message format to API ChatMessage format
-            const chatHistory = messages.slice(-6).map(m => ({
-                role: m.role,
-                text: m.text
-            }));
+        // Map our internal Message format to API ChatMessage format (max 6 messages history)
+        const chatHistory = messages.slice(-6).map(m => ({
+            role: m.role,
+            text: m.text
+        }));
 
-            const response = await askApi({
+        try {
+            const botMessageId = (Date.now() + 1).toString();
+            // Add initial empty bot message
+            setMessages(prev => [...prev, {
+                id: botMessageId,
+                role: 'bot',
+                text: '',
+                modelUsed: 'llama-3.1-8b-instant' // Default badge until stream starts
+            }]);
+
+            const stream = askStreamApi({
                 question: userText,
                 history: chatHistory
             });
 
-            // Pass full response to parent (Debug Panel)
-            onMetadataUpdate(response);
+            let fullStream = '';
+            for await (const token of stream) {
+                fullStream += token;
 
-            setMessages(prev => [...prev, {
-                id: (Date.now() + 1).toString(),
-                role: 'bot',
-                text: response.answer,
-                sources: response.sources // Now storing sources per message
-            }]);
+                // Extract only the user-visible answer part (before the hidden metadata JSON)
+                const parts = fullStream.split('__METADATA_JSON__');
+                const displayAnswer = parts[0];
+
+                setMessages(prev => prev.map(m =>
+                    m.id === botMessageId ? { ...m, text: displayAnswer } : m
+                ));
+            }
+
+            // Post-processing: Parse the hidden metadata to populate Observability and sources
+            if (fullStream.includes('__METADATA_JSON__')) {
+                const parts = fullStream.split('__METADATA_JSON__');
+                try {
+                    const payload = JSON.parse(parts[1].trim());
+                    const displayAnswer = parts[0];
+
+                    // Construct a full QueryResponse to satisfy the parent component's expectations
+                    const fullResponse = {
+                        answer: displayAnswer.trim(),
+                        metadata: payload.metadata,
+                        sources: payload.sources,
+                        conversation_id: conversationId
+                    };
+
+                    onMetadataUpdate(fullResponse as QueryResponse);
+
+                    // Re-sync messages with sources and finalized model badge
+                    setMessages(prev => prev.map(m =>
+                        m.id === botMessageId ? {
+                            ...m,
+                            sources: payload.sources,
+                            modelUsed: payload.metadata.model_used
+                        } : m
+                    ));
+                } catch (e) {
+                    console.error("Failed to parse metadata payload:", e);
+                }
+            }
+
         } catch (error) {
             setMessages(prev => [...prev, {
                 id: (Date.now() + 1).toString(),
                 role: 'bot',
-                text: "An error occurred while fetching the response."
+                text: "An error occurred while streaming the response."
             }]);
         } finally {
             setIsLoading(false);
@@ -139,7 +183,13 @@ export const Chat: React.FC<ChatProps> = ({ conversationId, onMetadataUpdate, on
                 {messages.map(msg => (
                     <div key={msg.id} className={`message ${msg.role}`}>
                         {msg.role === 'bot' && (
-                            <span className="model-badge">Assistant • Llama 3.3 70B</span>
+                            <span className="model-badge">
+                                Assistant • {
+                                    msg.modelUsed === 'llama-3.3-70b-versatile' ? 'Llama 3.3 70B' :
+                                        msg.modelUsed === 'llama-3.1-8b-instant' ? 'Llama 3.1 8B' :
+                                            'Llama Assistant'
+                                }
+                            </span>
                         )}
                         <ReactMarkdown
                             remarkPlugins={[remarkGfm]}

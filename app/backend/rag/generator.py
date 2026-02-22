@@ -1,9 +1,10 @@
 import os
 from typing import Dict, Any, List
-from groq import Groq
+from groq import Groq, AsyncGroq
 
-# Groq client is maintained as a module-level singleton to reuse the underlying TCP connection across multiple requests reducing overall latency
+# Groq clients are maintained as module-level singletons to reuse the underlying TCP connection 
 _groq_client: Groq = None
+_async_groq_client: AsyncGroq = None
 
 def get_groq_client() -> Groq:
     global _groq_client
@@ -11,6 +12,13 @@ def get_groq_client() -> Groq:
         api_key = os.environ.get("GROQ_API_KEY")
         _groq_client = Groq(api_key=api_key)
     return _groq_client
+
+def get_async_groq_client() -> AsyncGroq:
+    global _async_groq_client
+    if _async_groq_client is None:
+        api_key = os.environ.get("GROQ_API_KEY")
+        _async_groq_client = AsyncGroq(api_key=api_key)
+    return _async_groq_client
 
 # System prompt
 SYSTEM_PROMPT = """You are a Clearpath customer support assistant. Your job is to answer user questions professionally using the provided documentation.
@@ -120,11 +128,11 @@ def generate_answer(query: str, retrieved_chunks: List[Dict[str, Any]], model_st
             "usage": {"prompt_tokens": 0, "completion_tokens": 0}
         }
 
-def generate_answer_stream(query: str, retrieved_chunks: List[Dict[str, Any]], model_string: str, history: List[Any] = None):
+async def generate_answer_stream(query: str, retrieved_chunks: List[Dict[str, Any]], model_string: str, history: List[Any] = None):
     """
-    Generator that streams the response token-by-token from Groq.
+    Generator that streams the response token-by-token from Groq asynchronously.
     """
-    client = get_groq_client()
+    client = get_async_groq_client()
     if client is None:
         yield "Error: GROQ_API_KEY not set."
         return
@@ -149,14 +157,14 @@ def generate_answer_stream(query: str, retrieved_chunks: List[Dict[str, Any]], m
     messages.append({"role": "user", "content": user_message})
 
     try:
-        stream = client.chat.completions.create(
+        stream = await client.chat.completions.create(
             model=model_string,
             messages=messages,
             temperature=0.0,
             max_tokens=600,
             stream=True
         )
-        for chunk in stream:
+        async for chunk in stream:
             content = chunk.choices[0].delta.content
             if content:
                 yield content

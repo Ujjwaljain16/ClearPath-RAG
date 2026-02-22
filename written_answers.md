@@ -1,72 +1,89 @@
-# Clearpath Nexus — Written Answers
+# Clearpath Nexus — RAG Implementation Reflection
 
 ### Q1: Routing Logic
 **Describe your deterministic routing logic. Why did you choose this boundary? Give one example of a query that might be misclassified. How would you improve it (without using an LLM)?**
 
-The router utilizes a deterministic point-based heuristic system. Points are awarded for query length (>20 words: +2pts), presence of high-logic intent keywords like "integrate", "troubleshoot", "architecture", or "SLA" (+1pt), and grammatical structures indicating multi-step reasoning such as "difference between", "how do I", or "why is" (+1pt). A consolidated score of 0-1 routes to Llama 3.1 8B, while a score of >= 2 triggers the Llama 3.3 70B model.
+For the router, I implemented a **deterministic point-based heuristic system**. I wanted to avoid the "Russian Doll" problem where you call an LLM just to decide which LLM to call. Points are awarded based on:
+1. **Query Length**: >20 words hints at complex requirements (+2pts).
+2. **Intent Keywords**: Words like "integrate," "troubleshoot," or "SLA" signal high-gravity technical needs (+1pt).
+3. **Reasoning Markers**: Phrases like "difference between" or "how do I" indicate multi-turn logic (+1pt).
 
-This boundary was drawn to reserve the expensive 70B model for synthesis and complex troubleshooting, while delegating high-volume, low-complexity fact lookups to the efficient 8B model. This mimics a "Level 1 vs Level 2" support triage system common in enterprise IT.
+A score of 0-1 stays with **Llama 3.1 8B** (fast/cheap fact retrieval), while a score of >= 2 triggers **Llama 3.3 70B** for synthesis. I chose this boundary because 70B is essentially "overkill" for simple pricing lookups but necessary for explaining *why* an architectural decision was made.
 
-**Misclassification Example:** A user asks, *"What is SSO?"* This is short and lacks complex tokens, scoring a 0. The 8B model gives a generic dictionary definition. However, if the user's implicit intent was to find the *Clearpath-specific SSO configuration steps*, the 8B model might miss the nuance required to link varied segments of the "Data Security" and "API Documentation" files. The 70B model would have proactively synthesized the security requirements.
+**Misclassification Example (False Negative):**
+If a user asks simply, *"Clearpath vs Jira"*.
+This query is short (3 words) and lacks specific reasoning markers. It scores a 0 and hits the 8B model. However, competitive analysis is inherently high-reasoning—it requires identifying overlapping feature sets and articulating nuanced tradeoffs. The 8B model might just list features, missing the "vibe" of a SWOT analysis that the 70B model would nail.
 
-**Improvement (Non-LLM):** I would implement an N-gram based cosine similarity check against a "Complexity Corpus"—a small, local vector space of known complex support tickets. If a query is mathematically similar to known complex issues (even without matching specific keywords), it would be escalated. This significantly improves precision over basic regex without the latency of an LLM call.
+**Improvement (Non-LLM):**
+I’d use **Semantically-Aware Embedding Checks**. Instead of just counting words, I’d project the query into vector space and calculate the cosine similarity against a pre-defined "Complexity Cluster" (past queries known to need reasoning). This gives you semantic intelligence at the cost of a single vector math operation, which is far faster than an LLM call.
 
 ---
 
-### Q2: Retrieval Failure
-**Identify a specific failure case in your RAG retrieval. What was retrieved? Why did it fail? How would you fix it?**
+### Q2 : Retrieval Failures
+**Describe a case where your RAG pipeline retrieved the wrong chunk — or nothing at all. What was the query? What did your system retrieve? Why did the retrieval fail? What would fix it?**
 
-**Failure Case:** Querying *"What are the exact error codes for the OAuth API?"*
-**What was retrieved:** Sections from the User Guide mentioning "login errors" and sections from the System Architecture about "OAuth flows", but missing the specific API error table.
-**Why it failed:** Dense embeddings (SentenceTransformers) heavily compress semantic meaning. "OAuth" and "error" map closely to general authentication documentation. The specific numerical error codes (e.g., "401", "403") lose their strict token identity in dense vector space, causing precise tabular data to be outranked by semantically broad paragraphs. Furthermore, standard pdf extractors routinely drop table cells entirely.
-**The Fix (Implemented):** I implemented two critical fixes to solve this: 1) Explicit table cell extraction during ingestion (converting rows to pipe-delimited text strings), and 2) A hybrid retrieval pipeline combining FAISS with a BM25 sparse index. BM25 performs exact keyword matching, guaranteeing that literal tokens like "OAuth 403" are surfaced, which are then merged with dense results via Reciprocal Rank Fusion (RRF).
+One of the most interesting "real-world" failures I encountered during testing was the **"Pro Plan" Pricing Conflict**.
+
+**User Query:** *"How much does the Pro plan cost monthly?"*
+**Actual Error:** The system retrieved a sentence from an internal sales retro stating *"we could drop to $45/mo for some teams"* instead of the official Pricing Sheet value of **$49/mo**.
+
+**The Root Cause (Semantic Bias):**
+The failure happened because the internal doc had a high density of "pricing" keywords around that $45 figure, making it semantically "sticky" for the dense retriever. The official Pricing Sheet, being a table, was extracted as a sparser set of tokens. The retriever was prioritizing **relevance vibes** over **source authority**.
+
+**The Fix (Implemented):**
+I solved this by moving beyond simple vector search:
+1. **BM25 Hybrid Search**: Sparse lookup ensures that the literal tokens "Price" and "Pro" are anchored to the official sheet.
+2. **Source Reliability Tiering**: I designed a weighted-boosting system where documents with certain prefixes (e.g., `Technical/`, `Pricing/`) get a +20% boost in the final RRF score. This forces the system to trust "Official" docs over "Internal" ones even if the semantic similarity is slightly lower.
+3. **Markdown Table Ingestion**: I used `pdfplumber` to preserve table structures as pipe-delimited Markdown, ensuring the LLM sees the data's original grid relationship.
 
 ---
 
 ### Q3: Cost and Scale
 **Assume 5,000 queries/day. Estimate token usage and break down cost per model. What is the biggest cost driver? What is the highest ROI cost optimization? Name one optimization you should avoid.**
 
-**Assumption:** Average 1,500 input tokens (prompt + 3 retrieved chunks) and 150 output tokens.
-**Distribution:** 70% simple queries (3,500 to 8B), 30% complex (1,500 to 70B).
-- **8B Model:** 5.25M IN, 525k OUT per day. (At Groq rates: ~$0.26/day)
-- **70B Model:** 2.25M IN, 225k OUT per day. (At Groq rates: ~$1.33/day)
-**Biggest Cost Driver:** Input tokens directed to the 70B model. Because RAG injects ~1200 tokens of context per query, the input volume dominates the output volume by a 10:1 ratio.
-**Highest ROI Optimization (Implemented):** An exact-match LRU Query Cache. Because customer support queries heavily follow a power-law distribution (e.g., "How do I reset my password?" asked hundreds of times), caching the final LLM string response bypasses both retrieval and generation layers entirely for repeat queries, slashing costs and dropping latency to ~2ms.
-**Optimization to Avoid:** Aggressively shrinking the context window (e.g., dropping `top_k` from 3 to 1 to save input tokens). This will critically degrade response accuracy and trigger hallucinations, frustrating users and shifting the cost from LLM compute to human support loads.
+**Assumptions:** ~1,500 input tokens (prompt + 3 chunks) and ~150 output tokens. 70/30 split between 8B and 70B models.
+- **8B Costs**: 3,500 queries/day $\rightarrow$ ~$0.26/day.
+- **70B Costs**: 1,500 queries/day $\rightarrow$ ~$1.33/day.
+
+**Biggest Cost Driver**: Input tokens for the 70B model. In a RAG setup, you're essentially "pre-pending" a textbook to every query. Even if the user asks "Hi", the retriever injects 1,200 tokens of context. At 5,000 queries, that's millions of tokens per day.
+
+**Highest ROI Optimization (Implemented)**: **LRU Query Caching**. In a support environment, people ask the same thing constantly ("How do I log in?"). By caching the *final answer string* based on exact-match query hash, we bypass retrieval and model calls entirely for repeat hits. It drops cost to $0 and latency to ~2ms.
+
+**Optimization to Avoid**: Aggressively cutting `top_k`. If you only retrieve the top-1 chunk to save tokens, the LLM loses its ability to "cross-reference" facts. You save $0.05 but spend hours of engineering time fixing the hallucinations that follow.
 
 ---
 
 ### Q4: What Is Broken
 **Identify one genuine technical limitation in your current system. Why did you ship it this way? What single change would fix it?**
 
-**Limitation:** The system currently utilizes a synchronous Cross-Encoder reranking model (`ms-marco-MiniLM-L-6-v2`) that runs on the application server's CPU during the request hot path.
+**The "Silent Killer": Synchronous Reranking.**
+Right now, the system uses a **Cross-Encoder reranker** (`ms-marco-MiniLM-L-6-v2`) that runs on the CPU directly within the FastAPI request thread. 
 
-**Rationale for Shipment:** For a take-home assignment demonstrating end-to-end RAG architecture and logic, running the reranker locally inside the FastAPI monolith simplifies the environment setup for reviewers. It avoids the massive complexity of standing up a distributed GPU worker pool or requiring the reviewer to have local CUDA drivers. For single-user testing or small internal demos, the ~150-200ms CPU penalty is an acceptable trade-off for a "one-click" setup experience.
+**Why I shipped it:** I wanted the project to be "plug-and-play" locally. Bundling the reranker as a library means anyone can run it without needing a secondary GPU server or K8s cluster. In a single-user demo, a 200ms CPU-block is invisible.
 
-**Impact at Scale:** If deployed to a real production environment with 5,000 queries per day, this component would become a catastrophic bottleneck. Because the reranker is a heavy neural network running on the CPU, it blocks the FastAPI event loop thread. Under high concurrency (e.g., 50 simultaneous users), the server would experience "death by CPU saturation," resulting in multi-second response times and potential timeouts for all users.
+**The Scalability Impact:** At 5,000 queries/day, this is a disaster. Because it's a CPU-bound sync call, it **blocks the FastAPI event loop**. While the CPU is doing matrix math for Query A, it literally cannot accept Query B or even return a 200 OK. Under load, this would cause catastrophic latency spikes.
 
-**The Single Change Fix:** I would decouple the Cross-Encoder into a standalone microservice running on GPU-accelerated infrastructure (using a framework like NVIDIA Triton or Bentoml). The FastAPI backend would then communicate with this service via gRPC or a high-speed message queue. This change would drop the reranking latency to under 15ms and ensure the main API server remains responsive to IO-bound tasks while the GPU handles the heavy arithmetic.
+**The Fix:** Decouple the reranker into a **standalone GPU microservice**. I would call it via a non-blocking `httpx.post()` call. This offloads the heavy lifting to GPU-optimized hardware and lets the main API handle thousands of IO-bound tasks in parallel.
 
 ---
 
 ### AI Usage
-As per the assignment requirements, the following is a log of the primary prompts used with the AI coding assistant (Antigravity) to build this project:
 
-1. "Research the repository and implement a robust RAG pipeline using FAISS and BM25 that can handle tabular data in the PDFs."
-2. "Build a model router that uses rule-based heuristics to switch between Llama 3.1 8B and 3.3 70B without calling an LLM for the decision."
-3. "Implement a safeguard evaluator that flags no-context answers and unverified feature claims."
-4. "Optimize the backend for latency using singleton clients, async logging, and LRU caching."
-5. "Rebrand the entire application to 'Clearpath Nexus' and ensure all documentation reflects this new identity."
-6. "Implement conversation memory as a bonus challenge by injecting history into the LLM prompt."
+I used **Antigravity** (free-tier) to pair-program the infrastructure. Below are the 5 key prompts I used to build the core modules:
 
+1. **RAG Pipeline & Table-Aware Ingestion**: *"I need to build a RAG pipeline that can handle 30 PDFs of varied internal documentation. Standard vector search often loses context in tables so you write a Python script using pdfplumber for table-aware extraction i want to use FAISS for dense embeddings and rank-bm25 for sparse keyword matching then combine their results using RRF make sure it deduplicates chunks by id so llm doesnt get repeated context."*
+2. **Safeguard Output Evaluator**: *"To prevent hallucinations i need an Output Evaluator that runs before the response is finalized it should check three specific signals (1) did the retriever actually find any context after thresholding (2) does the LLM answer look like a hidden refusal and (3) does the answer overlap with key terms present in the retrieved chunks if any of these checks fail return a list of evaluator_flags so i can show a low-confidence warning along with this implement a guradrailing and a robust system prompt that make sure that there is no content leakage am open to discuss the security architecture and how to make it more secure"*
+3. **Frontend & Streaming Metadata Handling**: *"I need to build a minimal react frontend which should have a observability panel i want to support token by token streaming for the chat bubble but i also need to update the observability metrics once they are finalized so implemented a hidden metadata envelope pattern and the backend should yield a json payload at the end of the stream and the frontend should parse it to populate the dashboard without showing the raw json to the user make sure it looks good not so empty populate it okie"*
+4. **Deterministic Point-Router & Chunking Strategy**: *"After analysisng the format of the documents i realised that the documents are not that big so i decided to use a deterministic point router to route the queries to either a 8B or 70B model without using an expensive LLM for routing make sure it has less than 10ms latency and handles edge cases like short queries and technical jargon also change the chunking strategy to sliding window one of 900 chars and all also make sure  we calculate the mean similarity score of all 15 candidates"*
+5. **Test Coverage**: *"Here is the prd analyse the codebase throughlly deeply carefully and make sure we have covered all the needed requirements features and if not then add them in the codebase and make sure it is well documented and follows the best practices of software engineering and also make sure it is production ready and can be deployed in a production environment and make the needed test suite for this application"*
+
+The other prompts includes basic debugging polishing the comments answers and readme file to look professional classy and easy to understand
 ---
 
-### Bonus Challenge Notes
+### Bonus Notes
 
-**Conversation Memory: Design & Tradeoffs**
-The memory system is implemented using a **sliding window buffer** (last 6 messages) sent from the frontend to the backend.
-- **Design Decision**: I chose a stateless backend approach where the client provides the history. This avoids the need for a database (Redis/Postgres) on the backend, keeping the system "one-click" portable while still maintaining context. 
-- **Token Cost Tradeoff**: Each turn adds approximately 150-300 tokens to the prompt. By capping it at 6 messages (3 full turns), we strike a balance: the LLM remembers the immediate context (like "tell me more about the first one") without hitting the 8B model's context limits or significantly increasing Groq's input token costs for long-running sessions.
+For the **Bonus Challenges**, I made some specific architectural choices:
 
-**Streaming & Structured Output Parsing**
-The "Streaming" challenge requirement asks where structured output parsing breaks when streaming. In a standard REST response, the LLM provides a complete JSON object which can be easily validated and parsed. However, when **streaming token-by-token**, the intermediate states (e.g., `{"ans`) are incomplete and strictly invalid JSON. This means tools that rely on regex or JSON parsers to extract "citations" or "metadata" from the LLM's raw text will fail until the stream is finalized. This system handles this by streaming the raw `answer` content only, while metrics are calculated separately.
+1. **Memory**: I chose a **Frontend-managed Sliding Window** (last 6 messages). This keeps the backend "stateless" (no DB needed for a demo!), which makes the whole app portable as a single folder while still giving the user a coherent conversation.
+2. **Streaming & Observability**: Implementing streaming usually breaks the "Observability" panel because metadata (like latency/token counts) isn't finalized until the end. I solved this by adding a **hidden metadata envelope** at the end of the stream. The frontend parses this hidden JSON to populate the debug panel without the user seeing the "guts" of the system.
+3. **Security**: I implemented a 5-layer defense including "Instruction Wrapping" to ensure that if a PDF says "Ignore all previous instructions," the LLM treats it as an untrusted string rather than a command.
